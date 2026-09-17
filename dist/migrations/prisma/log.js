@@ -1,0 +1,122 @@
+import * as fs from "fs/promises";
+import * as path from "path";
+import * as crypto from "crypto";
+const MIGRATION_LOG_HEADER = `# zenstack-kit migration log
+# Format: <migration_name> <checksum>
+`;
+function normalizeSQL(sql) {
+    return sql
+        .replace(/--[^\n]*/g, "")
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+}
+/**
+ * Calculate SHA256 checksum of migration SQL (v2: normalized, whitespace/comment-insensitive)
+ */
+export function calculateChecksum(sql) {
+    return "v2:" + crypto.createHash("sha256").update(normalizeSQL(sql)).digest("hex");
+}
+/**
+ * Recompute checksum using the same version as an existing stored checksum.
+ * v1 (plain hex): raw SQL. v2 (v2:<hex>): normalized SQL.
+ */
+export function rehashWithSameVersion(sql, existingChecksum) {
+    if (existingChecksum.startsWith("v2:")) {
+        return calculateChecksum(sql);
+    }
+    return crypto.createHash("sha256").update(sql).digest("hex");
+}
+/**
+ * Get the path to the migration log file
+ */
+export function getMigrationLogPath(outputPath) {
+    return path.join(outputPath, "meta", "_migration_log");
+}
+/**
+ * Parse migration log content into entries
+ */
+function parseMigrationLog(content) {
+    return content
+        .split("\n")
+        .filter((line) => line.trim() && !line.startsWith("#"))
+        .map((line) => {
+        const [name, checksum] = line.split(" ");
+        return { name, checksum };
+    })
+        .filter((entry) => entry.name && entry.checksum);
+}
+/**
+ * Serialize migration log entries to string
+ */
+function serializeMigrationLog(entries) {
+    const lines = entries.map((e) => `${e.name} ${e.checksum}`).join("\n");
+    return MIGRATION_LOG_HEADER + lines + (lines.length > 0 ? "\n" : "");
+}
+/**
+ * Read migration log file
+ */
+export async function readMigrationLog(outputPath) {
+    const logPath = getMigrationLogPath(outputPath);
+    try {
+        const content = await fs.readFile(logPath, "utf-8");
+        return parseMigrationLog(content);
+    }
+    catch (error) {
+        if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+            return [];
+        }
+        throw error;
+    }
+}
+/**
+ * Write migration log file
+ */
+export async function writeMigrationLog(outputPath, entries) {
+    const logPath = getMigrationLogPath(outputPath);
+    await fs.mkdir(path.dirname(logPath), { recursive: true });
+    await fs.writeFile(logPath, serializeMigrationLog(entries), "utf-8");
+}
+/**
+ * Append a single entry to the migration log
+ */
+export async function appendToMigrationLog(outputPath, entry) {
+    const entries = await readMigrationLog(outputPath);
+    entries.push(entry);
+    await writeMigrationLog(outputPath, entries);
+}
+/**
+ * Scan migration folders and compute checksums for each.
+ * Pass existingEntries to preserve checksum versions for already-tracked migrations.
+ */
+export async function scanMigrationFolders(outputPath, existingEntries) {
+    const entries = [];
+    try {
+        const dirEntries = await fs.readdir(outputPath, { withFileTypes: true });
+        const migrationFolders = dirEntries
+            .filter((e) => e.isDirectory() && /^\d{14}(?:_.+)?$/.test(e.name))
+            .map((e) => e.name)
+            .sort();
+        for (const folderName of migrationFolders) {
+            const sqlPath = path.join(outputPath, folderName, "migration.sql");
+            try {
+                const sqlContent = await fs.readFile(sqlPath, "utf-8");
+                const existing = existingEntries?.get(folderName);
+                const checksum = existing
+                    ? rehashWithSameVersion(sqlContent, existing.checksum)
+                    : calculateChecksum(sqlContent);
+                entries.push({ name: folderName, checksum });
+            }
+            catch {
+                // Skip folders without migration.sql
+            }
+        }
+    }
+    catch (error) {
+        if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+            return [];
+        }
+        throw error;
+    }
+    return entries;
+}

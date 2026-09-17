@@ -17,6 +17,7 @@
   },
   "files": [
     "dist",
+    "CUSTOM-DIALECTS.md",
     "README.md",
     "LICENSE"
   ],
@@ -42,12 +43,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/olup/zenstack-kit.git"
+    "url": "git+https://github.com/tylergets/zenstack-kit.git"
   },
   "bugs": {
-    "url": "https://github.com/olup/zenstack-kit/issues"
+    "url": "https://github.com/tylergets/zenstack-kit/issues"
   },
-  "homepage": "https://github.com/olup/zenstack-kit#readme",
+  "homepage": "https://github.com/tylergets/zenstack-kit#readme",
   "engines": {
     "node": ">=18"
   },

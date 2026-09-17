@@ -1,8 +1,7 @@
 # Dependencies
 node_modules/
 
-# Build output
-dist/
+# dist/ is committed so GitHub-pinned installs need no build lifecycle scripts.
 
 # Test artifacts
 *.db

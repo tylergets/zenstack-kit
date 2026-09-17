@@ -1,0 +1,364 @@
+/**
+ * SQL Compiler - Generates raw SQL from schema operations using Kysely's compile()
+ *
+ * Uses Kysely with DummyDriver to compile schema operations to dialect-specific SQL
+ * without requiring a database connection.
+ */
+import { Kysely, DummyDriver, SqliteAdapter, SqliteIntrospector, SqliteQueryCompiler, PostgresAdapter, PostgresIntrospector, PostgresQueryCompiler, MysqlAdapter, MysqlIntrospector, MysqlQueryCompiler, sql, } from "kysely";
+/**
+ * Create a Kysely instance configured for SQL compilation only (no actual DB connection)
+ */
+function createCompilerDb(dialect) {
+    if (dialect === "sqlite") {
+        return new Kysely({
+            dialect: {
+                createAdapter: () => new SqliteAdapter(),
+                createDriver: () => new DummyDriver(),
+                createIntrospector: (db) => new SqliteIntrospector(db),
+                createQueryCompiler: () => new SqliteQueryCompiler(),
+            },
+        });
+    }
+    else if (dialect === "postgres") {
+        return new Kysely({
+            dialect: {
+                createAdapter: () => new PostgresAdapter(),
+                createDriver: () => new DummyDriver(),
+                createIntrospector: (db) => new PostgresIntrospector(db),
+                createQueryCompiler: () => new PostgresQueryCompiler(),
+            },
+        });
+    }
+    else {
+        return new Kysely({
+            dialect: {
+                createAdapter: () => new MysqlAdapter(),
+                createDriver: () => new DummyDriver(),
+                createIntrospector: (db) => new MysqlIntrospector(db),
+                createQueryCompiler: () => new MysqlQueryCompiler(),
+            },
+        });
+    }
+}
+/** Map ZenStack PascalCase referential action to Kysely's lowercase format */
+export function toKyselyReferentialAction(action) {
+    const map = {
+        Cascade: "cascade",
+        Restrict: "restrict",
+        SetNull: "set null",
+        SetDefault: "set default",
+        NoAction: "no action",
+    };
+    return map[action] ?? action.toLowerCase();
+}
+/**
+ * Compile a CREATE TABLE statement to SQL
+ */
+export function compileCreateTable(model, options) {
+    const db = createCompilerDb(options.dialect);
+    let builder = db.schema.createTable(model.name);
+    for (const column of model.columns) {
+        const columnType = column.isEnum
+            ? mapColumnTypeWithEnum(column, options.dialect)
+            : mapColumnType(column.type, options.dialect, {
+                isArray: column.isArray,
+                isAutoincrement: column.isAutoincrement,
+            });
+        builder = builder.addColumn(column.name, sql.raw(columnType), (cb) => {
+            // For SERIAL types in PostgreSQL, NOT NULL is implicit and we don't need defaults
+            const isSerialType = column.isAutoincrement && options.dialect === "postgres";
+            if (column.notNull && !isSerialType) {
+                cb = cb.notNull();
+            }
+            if (column.default !== undefined && !isSerialType) {
+                cb = cb.defaultTo(sql.raw(formatDefault(column.default, options.dialect, column)));
+            }
+            return cb;
+        });
+    }
+    // Add primary key constraint
+    if (model.primaryKey) {
+        builder = builder.addPrimaryKeyConstraint(model.primaryKey.name, model.primaryKey.columns);
+    }
+    // Add unique constraints
+    for (const unique of model.uniqueConstraints) {
+        builder = builder.addUniqueConstraint(unique.name, unique.columns);
+    }
+    // Add foreign key constraints
+    for (const fk of model.foreignKeys) {
+        builder = builder.addForeignKeyConstraint(fk.name, fk.columns, fk.referencedTable, fk.referencedColumns, (cb) => {
+            if (fk.onDelete)
+                cb = cb.onDelete(toKyselyReferentialAction(fk.onDelete));
+            if (fk.onUpdate)
+                cb = cb.onUpdate(toKyselyReferentialAction(fk.onUpdate));
+            return cb;
+        });
+    }
+    return builder.compile().sql + ";";
+}
+/**
+ * Compile a DROP TABLE statement to SQL
+ */
+export function compileDropTable(tableName, options) {
+    const db = createCompilerDb(options.dialect);
+    return db.schema.dropTable(tableName).ifExists().compile().sql + ";";
+}
+/**
+ * Compile an ADD COLUMN statement to SQL
+ */
+export function compileAddColumn(tableName, column, options) {
+    const db = createCompilerDb(options.dialect);
+    const columnType = column.isEnum
+        ? mapColumnTypeWithEnum(column, options.dialect)
+        : mapColumnType(column.type, options.dialect, {
+            isArray: column.isArray,
+            isAutoincrement: column.isAutoincrement,
+        });
+    return (db.schema
+        .alterTable(tableName)
+        .addColumn(column.name, sql.raw(columnType), (cb) => {
+        const isSerialType = column.isAutoincrement && options.dialect === "postgres";
+        if (column.notNull && !isSerialType) {
+            cb = cb.notNull();
+        }
+        if (column.default !== undefined && !isSerialType) {
+            cb = cb.defaultTo(sql.raw(formatDefault(column.default, options.dialect, column)));
+        }
+        return cb;
+    })
+        .compile().sql + ";");
+}
+/**
+ * Compile a DROP COLUMN statement to SQL
+ */
+export function compileDropColumn(tableName, columnName, options) {
+    const db = createCompilerDb(options.dialect);
+    return db.schema.alterTable(tableName).dropColumn(columnName).compile().sql + ";";
+}
+/**
+ * Compile a RENAME TABLE statement to SQL
+ */
+export function compileRenameTable(fromName, toName, options) {
+    const db = createCompilerDb(options.dialect);
+    return db.schema.alterTable(fromName).renameTo(toName).compile().sql + ";";
+}
+/**
+ * Compile a RENAME COLUMN statement to SQL
+ */
+export function compileRenameColumn(tableName, fromName, toName, options) {
+    const db = createCompilerDb(options.dialect);
+    return (db.schema.alterTable(tableName).renameColumn(fromName, toName).compile().sql + ";");
+}
+/**
+ * Compile a CREATE INDEX statement to SQL
+ */
+export function compileCreateIndex(tableName, indexName, columns, options) {
+    const db = createCompilerDb(options.dialect);
+    let builder = db.schema.createIndex(indexName).on(tableName);
+    for (const col of columns) {
+        builder = builder.column(col);
+    }
+    return builder.compile().sql + ";";
+}
+/**
+ * Compile a DROP INDEX statement to SQL
+ */
+export function compileDropIndex(indexName, options) {
+    const db = createCompilerDb(options.dialect);
+    return db.schema.dropIndex(indexName).compile().sql + ";";
+}
+/**
+ * Compile an ADD CONSTRAINT (unique) statement to SQL
+ */
+export function compileAddUniqueConstraint(tableName, constraintName, columns, options) {
+    const db = createCompilerDb(options.dialect);
+    return (db.schema
+        .alterTable(tableName)
+        .addUniqueConstraint(constraintName, columns)
+        .compile().sql + ";");
+}
+/**
+ * Compile a DROP CONSTRAINT statement to SQL
+ */
+export function compileDropConstraint(tableName, constraintName, options) {
+    const db = createCompilerDb(options.dialect);
+    return (db.schema.alterTable(tableName).dropConstraint(constraintName).compile().sql + ";");
+}
+/**
+ * Compile an ADD FOREIGN KEY CONSTRAINT statement to SQL
+ */
+export function compileAddForeignKeyConstraint(tableName, constraintName, columns, referencedTable, referencedColumns, options, onDelete, onUpdate) {
+    const db = createCompilerDb(options.dialect);
+    let builder = db.schema
+        .alterTable(tableName)
+        .addForeignKeyConstraint(constraintName, columns, referencedTable, referencedColumns);
+    if (onDelete)
+        builder = builder.onDelete(onDelete);
+    if (onUpdate)
+        builder = builder.onUpdate(onUpdate);
+    return builder.compile().sql + ";";
+}
+/**
+ * Compile an ADD PRIMARY KEY CONSTRAINT statement to SQL
+ */
+export function compileAddPrimaryKeyConstraint(tableName, constraintName, columns, options) {
+    const db = createCompilerDb(options.dialect);
+    return (db.schema
+        .alterTable(tableName)
+        .addPrimaryKeyConstraint(constraintName, columns)
+        .compile().sql + ";");
+}
+/**
+ * Compile ALTER COLUMN statements for type/nullability/default changes
+ */
+export function compileAlterColumn(tableName, columnName, changes, options) {
+    const db = createCompilerDb(options.dialect);
+    const statements = [];
+    if (changes.setType) {
+        const col = changes.setType;
+        const columnType = col.isEnum
+            ? mapColumnTypeWithEnum(col, options.dialect)
+            : mapColumnType(col.type, options.dialect, { isArray: col.isArray, isAutoincrement: col.isAutoincrement });
+        if (col.isEnum && options.dialect === "postgres") {
+            // PostgreSQL cannot automatically cast between enum types (or from text to enum).
+            // Use a USING clause that casts via text so compatible values survive the migration.
+            statements.push(`ALTER TABLE "${tableName}" ALTER COLUMN "${columnName}" TYPE ${columnType} USING "${columnName}"::text::${columnType};`);
+        }
+        else {
+            statements.push(db.schema
+                .alterTable(tableName)
+                .alterColumn(columnName, (ac) => ac.setDataType(sql.raw(columnType)))
+                .compile().sql + ";");
+        }
+    }
+    if (changes.setNotNull) {
+        statements.push(db.schema
+            .alterTable(tableName)
+            .alterColumn(columnName, (ac) => ac.setNotNull())
+            .compile().sql + ";");
+    }
+    if (changes.dropNotNull) {
+        statements.push(db.schema
+            .alterTable(tableName)
+            .alterColumn(columnName, (ac) => ac.dropNotNull())
+            .compile().sql + ";");
+    }
+    if (changes.setDefault !== undefined) {
+        statements.push(db.schema
+            .alterTable(tableName)
+            .alterColumn(columnName, (ac) => ac.setDefault(sql.raw(formatDefault(changes.setDefault, options.dialect))))
+            .compile().sql + ";");
+    }
+    if (changes.dropDefault) {
+        statements.push(db.schema
+            .alterTable(tableName)
+            .alterColumn(columnName, (ac) => ac.dropDefault())
+            .compile().sql + ";");
+    }
+    return statements;
+}
+/**
+ * Map our internal type names to dialect-specific SQL types
+ */
+function mapColumnType(type, dialect, options) {
+    const { isArray, isAutoincrement } = options ?? {};
+    // Handle autoincrement for PostgreSQL - use SERIAL/BIGSERIAL types
+    if (isAutoincrement && dialect === "postgres") {
+        if (type === "bigint") {
+            return "bigserial";
+        }
+        return "serial";
+    }
+    // Handle autoincrement for MySQL
+    if (isAutoincrement && dialect === "mysql") {
+        // MySQL uses AUTO_INCREMENT attribute, but we can map to appropriate int type
+        // The actual AUTO_INCREMENT will be added via the modifier
+        return type;
+    }
+    // For PostgreSQL, use jsonb instead of json (binary JSON: more efficient, supports indexing)
+    const resolvedType = type === "json" && dialect === "postgres" ? "jsonb" : type;
+    // Handle array types for PostgreSQL
+    if (isArray && dialect === "postgres") {
+        return `${resolvedType}[]`;
+    }
+    // Most types are already SQL types from our snapshot, just return as-is
+    // The Kysely compiler will handle dialect-specific adjustments
+    return resolvedType;
+}
+/**
+ * Format a default value for SQL
+ */
+function formatDefault(value, dialect, column) {
+    if (typeof value === "string") {
+        // Check if it's a function call like now() or autoincrement()
+        if (/^\w+\([^)]*\)$/.test(value)) {
+            return value;
+        }
+        // For enum columns in PostgreSQL, we need to cast the default value
+        if (column?.isEnum && dialect === "postgres") {
+            const escapedValue = value.replace(/'/g, "''");
+            return `'${escapedValue}'::"${column.type}"`;
+        }
+        // Escape string values
+        return `'${value.replace(/'/g, "''")}'`;
+    }
+    if (typeof value === "boolean") {
+        if (dialect === "sqlite") {
+            return value ? "1" : "0";
+        }
+        return value ? "true" : "false";
+    }
+    return String(value);
+}
+/**
+ * Compile a CREATE TYPE ... AS ENUM statement for PostgreSQL
+ * For MySQL and SQLite, enums are handled differently (inline or as text)
+ */
+export function compileCreateEnum(enumDef, options) {
+    if (options.dialect !== "postgres") {
+        // MySQL and SQLite don't have standalone enum types
+        return null;
+    }
+    const values = enumDef.values.map((v) => `'${v.replace(/'/g, "''")}'`).join(", ");
+    return `CREATE TYPE "${enumDef.name}" AS ENUM (${values});`;
+}
+/**
+ * Compile a DROP TYPE statement for PostgreSQL
+ */
+export function compileDropEnum(enumName, options) {
+    if (options.dialect !== "postgres") {
+        return null;
+    }
+    return `DROP TYPE IF EXISTS "${enumName}";`;
+}
+/**
+ * Compile an ALTER TYPE ... ADD VALUE statement for PostgreSQL
+ * Adds a new value to an existing enum type
+ */
+export function compileAddEnumValue(enumName, value, options) {
+    if (options.dialect !== "postgres") {
+        return null;
+    }
+    const escapedValue = value.replace(/'/g, "''");
+    return `ALTER TYPE "${enumName}" ADD VALUE '${escapedValue}';`;
+}
+/**
+ * Map column type considering enum types
+ * For enum columns, returns the enum type name (PostgreSQL) or text (other dialects)
+ */
+export function mapColumnTypeWithEnum(column, dialect) {
+    if (column.isEnum) {
+        if (dialect === "postgres") {
+            // Use the native enum type for PostgreSQL
+            const baseType = `"${column.type}"`;
+            return column.isArray ? `${baseType}[]` : baseType;
+        }
+        // For MySQL and SQLite, fall back to text
+        return column.isArray ? "text[]" : "text";
+    }
+    // Use existing type mapping for non-enum columns
+    return mapColumnType(column.type, dialect, {
+        isArray: column.isArray,
+        isAutoincrement: column.isAutoincrement,
+    });
+}

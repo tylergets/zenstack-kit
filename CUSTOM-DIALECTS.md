@@ -1,5 +1,18 @@
 # Caller-supplied drivers
 
+## Installing this fork without npm publishing
+
+Use `git+https://github.com/tylergets/zenstack-kit.git#<full-commit-sha>` as the
+`zenstack-kit` dependency. This fork commits `dist/` alongside its source, so Git
+installs work with lifecycle scripts disabled. When updating the fork, install
+dependencies with `pnpm install --frozen-lockfile --ignore-scripts`, run
+`pnpm run build`, and commit the resulting distributable before updating the
+consumer's pinned commit. No `prepare` script or npm publication is needed.
+
+The upstream project is https://github.com/olup/zenstack-kit.
+
+## Driver injection
+
 This fork supports custom Kysely dialects without importing the built-in database
 drivers. The `dialect` string still selects SQL syntax and introspection behavior;
 `kyselyDialect` selects the actual connection implementation.
