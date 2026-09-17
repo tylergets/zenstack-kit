@@ -260,7 +260,7 @@ export async function runMigrateApply(ctx: CommandContext): Promise<void> {
     throw new CommandError("No migrations found.");
   }
 
-  if (dialect !== "sqlite" && !connectionUrl) {
+  if (dialect !== "sqlite" && !connectionUrl && !config.kyselyDialect) {
     throw new CommandError("Database connection URL is required for non-sqlite dialects.");
   }
 
@@ -275,6 +275,7 @@ export async function runMigrateApply(ctx: CommandContext): Promise<void> {
     ctx.log("info", "Preview mode - no changes will be applied.");
 
     const preview = await previewPrismaMigrations({
+      kyselyDialect: config.kyselyDialect,
       migrationsFolder: outputPath,
       dialect,
       connectionUrl,
@@ -319,6 +320,8 @@ export async function runMigrateApply(ctx: CommandContext): Promise<void> {
     (strictEnv ? strictEnv.toLowerCase() === "true" : false);
 
   const result = await applyPrismaMigrations({
+    kyselyDialect: config.kyselyDialect,
+    executeMigrationSql: config.executeMigrationSql,
     migrationsFolder: outputPath,
     dialect,
     connectionUrl,
@@ -549,7 +552,7 @@ export async function runPull(ctx: CommandContext): Promise<void> {
 
   const connectionUrl = getConnectionUrl(config, dialect);
 
-  if (dialect !== "sqlite" && !connectionUrl) {
+  if (dialect !== "sqlite" && !connectionUrl && !config.kyselyDialect) {
     throw new CommandError("Database connection URL is required for non-sqlite dialects.");
   }
 
@@ -598,6 +601,7 @@ export async function runPull(ctx: CommandContext): Promise<void> {
     ctx.log("info", "Preview mode - no files will be written.");
 
     const result = await pullSchema({
+      kyselyDialect: config.kyselyDialect,
       dialect,
       connectionUrl,
       databasePath,
@@ -635,6 +639,7 @@ export async function runPull(ctx: CommandContext): Promise<void> {
   ctx.log("info", "Pulling schema from database...");
 
   const result = await pullSchema({
+    kyselyDialect: config.kyselyDialect,
     dialect,
     connectionUrl,
     databasePath,

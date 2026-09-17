@@ -4,14 +4,11 @@
 
 import * as path from "path";
 import type { MigrationProvider } from "kysely";
-import type { KyselyDialect } from "../sql/kysely-adapter.js";
+import type { KyselyAdapterOptions } from "../sql/kysely-adapter.js";
 import { createKyselyAdapter } from "../sql/kysely-adapter.js";
 
-export interface ApplyMigrationsOptions {
+export interface ApplyMigrationsOptions extends KyselyAdapterOptions {
   migrationsFolder: string;
-  dialect: KyselyDialect;
-  connectionUrl?: string;
-  databasePath?: string;
 }
 
 export interface ApplyMigrationsResult {
@@ -24,8 +21,7 @@ export async function applyMigrations(options: ApplyMigrationsOptions): Promise<
     (options.dialect === "sqlite" ? resolveSqlitePath(options.connectionUrl) : undefined);
 
   const { db, destroy } = await createKyselyAdapter({
-    dialect: options.dialect,
-    connectionUrl: options.connectionUrl,
+    ...options,
     databasePath,
   });
 

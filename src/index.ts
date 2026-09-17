@@ -65,7 +65,10 @@ export {
   createKyselyAdapter,
   type KyselyAdapter,
   type KyselyDialect,
+  type KyselyAdapterOptions,
+  type KyselyDialectProvider,
 } from "./sql/kysely-adapter.js";
+export type { MigrationSqlExecutor } from "./migrations/prisma/apply.js";
 
 // Database pull (introspection)
 export { pullSchema, type PullOptions, type PullResult } from "./schema/pull.js";

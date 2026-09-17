@@ -4,8 +4,15 @@
  * Provides a type-safe way to define configuration similar to drizzle-kit's config.
  */
 
+import type { KyselyDialectProvider } from "../sql/kysely-adapter.js";
+import type { MigrationSqlExecutor } from "../migrations/prisma/apply.js";
+
 /** Base configuration shared across all dialects */
 interface BaseConfig {
+  /** Override built-in drivers; a factory should return a fresh dialect per operation. */
+  kyselyDialect?: KyselyDialectProvider;
+  /** Execute complete migration SQL files when using a custom dialect. */
+  executeMigrationSql?: MigrationSqlExecutor;
   /** Path to ZenStack schema file */
   schema: string;
   /** Output directory for generated files */

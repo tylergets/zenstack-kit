@@ -9,9 +9,15 @@ import type { Kysely, Dialect } from "kysely";
 
 export type KyselyDialect = "sqlite" | "postgres" | "mysql";
 
+export type KyselyDialectProvider =
+  | Dialect
+  | ((options: KyselyAdapterOptions) => Dialect | Promise<Dialect>);
+
 export interface KyselyAdapterOptions {
   /** Database dialect */
   dialect: KyselyDialect;
+  /** Override the default driver. Each invocation owns and destroys its dialect. */
+  kyselyDialect?: KyselyDialectProvider;
   /** Database connection URL */
   connectionUrl?: string;
   /** SQLite database path (for SQLite dialect) */
@@ -24,6 +30,8 @@ export interface KyselyAdapterOptions {
 }
 
 export interface KyselyAdapter<DB> {
+  /** The resolved dialect, owned by this adapter. */
+  dialect: Dialect;
   /** The Kysely instance */
   db: Kysely<DB>;
   /** Destroy the connection pool */
@@ -53,7 +61,26 @@ export interface KyselyAdapter<DB> {
 export async function createKyselyAdapter<DB>(
   options: KyselyAdapterOptions
 ): Promise<KyselyAdapter<DB>> {
-  // Dynamic imports based on dialect to avoid bundling unused drivers
+  const dialect = options.kyselyDialect
+    ? typeof options.kyselyDialect === "function"
+      ? await options.kyselyDialect(options)
+      : options.kyselyDialect
+    : await createDefaultDialect(options);
+
+  const { Kysely } = await import("kysely");
+  const db = new Kysely<DB>({ dialect });
+
+  return {
+    dialect,
+    db,
+    destroy: async () => {
+      await db.destroy();
+    },
+  };
+}
+
+async function createDefaultDialect(options: KyselyAdapterOptions): Promise<Dialect> {
+  // Import built-in drivers only when no custom dialect was supplied.
   let dialect: Dialect;
 
   switch (options.dialect) {
@@ -99,13 +126,5 @@ export async function createKyselyAdapter<DB>(
       throw new Error(`Unsupported dialect: ${options.dialect}`);
   }
 
-  const { Kysely } = await import("kysely");
-  const db = new Kysely<DB>({ dialect });
-
-  return {
-    db,
-    destroy: async () => {
-      await db.destroy();
-    },
-  };
+  return dialect;
 }

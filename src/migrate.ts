@@ -31,10 +31,15 @@ import {
   type ApplyPrismaMigrationsResult,
   type PreviewPrismaMigrationsResult,
 } from "./migrations/prisma.js";
-import type { KyselyDialect } from "./sql/kysely-adapter.js";
+import type { KyselyDialect, KyselyDialectProvider } from "./sql/kysely-adapter.js";
+import type { MigrationSqlExecutor } from "./migrations/prisma/apply.js";
 import * as path from "path";
 
 export interface MigrateOptions {
+  /** Override built-in drivers with a dialect or fresh-dialect factory. */
+  kyselyDialect?: KyselyDialectProvider;
+  /** Execute complete SQL files when using a custom dialect. */
+  executeMigrationSql?: MigrationSqlExecutor;
   /**
    * Path to migrations folder.
    * If not provided, will be read from config file.
@@ -139,12 +144,16 @@ export async function migrate(options: MigrateOptions = {}): Promise<MigrateResu
   let dialect = options.dialect;
   let connectionUrl = options.connectionUrl;
   let databasePath = options.databasePath;
+  let kyselyDialect = options.kyselyDialect;
+  let executeMigrationSql = options.executeMigrationSql;
 
   if (!migrationsFolder || !dialect) {
     const loaded = await loadConfig(cwd);
 
     if (loaded) {
       const { config, configDir } = loaded;
+      kyselyDialect ??= config.kyselyDialect;
+      executeMigrationSql ??= config.executeMigrationSql;
 
       if (!migrationsFolder) {
         const relativeFolder = config.migrations?.migrationsFolder ?? "./prisma/migrations";
@@ -179,7 +188,7 @@ export async function migrate(options: MigrateOptions = {}): Promise<MigrateResu
     );
   }
 
-  if (dialect !== "sqlite" && !connectionUrl) {
+  if (dialect !== "sqlite" && !connectionUrl && !kyselyDialect) {
     throw new Error(
       "connectionUrl is required for postgres/mysql. Provide it in options or in your config file."
     );
@@ -191,6 +200,7 @@ export async function migrate(options: MigrateOptions = {}): Promise<MigrateResu
   // Preview mode
   if (options.preview) {
     const result = await previewPrismaMigrations({
+      kyselyDialect,
       migrationsFolder,
       dialect,
       connectionUrl,
@@ -204,6 +214,8 @@ export async function migrate(options: MigrateOptions = {}): Promise<MigrateResu
 
   // Apply mode
   const result = await applyPrismaMigrations({
+    kyselyDialect,
+    executeMigrationSql,
     migrationsFolder,
     dialect,
     connectionUrl,

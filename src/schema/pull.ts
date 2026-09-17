@@ -7,9 +7,9 @@
 import * as fs from "fs/promises";
 import * as path from "path";
 import { sql } from "kysely";
-import { createKyselyAdapter, type KyselyDialect } from "../sql/kysely-adapter.js";
+import { createKyselyAdapter, type KyselyDialect, type KyselyAdapterOptions } from "../sql/kysely-adapter.js";
 
-export interface PullOptions {
+export interface PullOptions extends KyselyAdapterOptions {
   /** Database dialect */
   dialect: KyselyDialect;
   /** Database connection URL */
@@ -705,11 +705,7 @@ function buildEnumBlock(enumInfo: EnumInfo): string {
 }
 
 export async function pullSchema(options: PullOptions): Promise<PullResult> {
-  const { db, destroy } = await createKyselyAdapter({
-    dialect: options.dialect,
-    connectionUrl: options.connectionUrl,
-    databasePath: options.databasePath,
-  });
+  const { db, destroy } = await createKyselyAdapter(options);
 
   try {
     const tables = await db.introspection.getTables({ withInternalKyselyTables: false });

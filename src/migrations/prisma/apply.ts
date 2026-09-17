@@ -1,12 +1,19 @@
 import * as fs from "fs/promises";
 import * as path from "path";
 import * as crypto from "crypto";
-import { sql } from "kysely";
+import { sql, type Dialect } from "kysely";
+import type { KyselyAdapterOptions } from "../../sql/kysely-adapter.js";
 import type { KyselyDialect } from "../../sql/kysely-adapter.js";
 import { createKyselyAdapter } from "../../sql/kysely-adapter.js";
 import { calculateChecksum, rehashWithSameVersion, readMigrationLog, writeMigrationLog, type MigrationLogEntry } from "./log.js";
 
-export interface ApplyPrismaMigrationsOptions {
+export type MigrationSqlExecutor = (
+  sqlContent: string,
+  db: Awaited<ReturnType<typeof createKyselyAdapter>>["db"],
+  dialect: Dialect
+) => void | Promise<void>;
+
+export interface ApplyPrismaMigrationsOptions extends KyselyAdapterOptions {
   /** Migrations folder path */
   migrationsFolder: string;
   /** Database dialect */
@@ -15,6 +22,8 @@ export interface ApplyPrismaMigrationsOptions {
   connectionUrl?: string;
   /** SQLite database path */
   databasePath?: string;
+  /** Execute a whole SQL file. Required for applying SQL with a custom dialect. */
+  executeMigrationSql?: MigrationSqlExecutor;
   /** Migrations table name (default: _prisma_migrations) */
   migrationsTable?: string;
   /** Migrations schema (PostgreSQL only, default: public) */
@@ -341,7 +350,16 @@ export async function applyPrismaMigrations(
   const migrationsTable = options.migrationsTable ?? "_prisma_migrations";
   const migrationsSchema = options.migrationsSchema ?? "public";
 
-  const { db, destroy } = await createKyselyAdapter({
+  if (options.kyselyDialect && !options.markApplied && !options.executeMigrationSql) {
+    throw new Error(
+      "executeMigrationSql is required when applying SQL migrations with a custom kyselyDialect. " +
+      "The executor must handle the entire SQL file, including multiple statements."
+    );
+  }
+
+  const { db, destroy, dialect: kyselyDialect } = await createKyselyAdapter({
+    kyselyDialect: options.kyselyDialect,
+    pool: options.pool,
     dialect: options.dialect,
     connectionUrl: options.connectionUrl,
     databasePath: options.databasePath,
@@ -489,11 +507,14 @@ export async function applyPrismaMigrations(
 
       try {
         if (!options.markApplied) {
-          // Execute the migration SQL using direct driver access
-          await executeRawSql(options.dialect, sqlContent, {
-            connectionUrl: options.connectionUrl,
-            databasePath: options.databasePath,
-          });
+          if (options.executeMigrationSql) {
+            await options.executeMigrationSql(sqlContent, db, kyselyDialect);
+          } else {
+            await executeRawSql(options.dialect, sqlContent, {
+              connectionUrl: options.connectionUrl,
+              databasePath: options.databasePath,
+            });
+          }
         }
 
         // Record the migration (still use Kysely for this since it's simple INSERT)
@@ -534,6 +555,8 @@ export async function previewPrismaMigrations(
   const migrationsSchema = options.migrationsSchema ?? "public";
 
   const { db, destroy } = await createKyselyAdapter({
+    kyselyDialect: options.kyselyDialect,
+    pool: options.pool,
     dialect: options.dialect,
     connectionUrl: options.connectionUrl,
     databasePath: options.databasePath,
